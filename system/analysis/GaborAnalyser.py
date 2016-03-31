@@ -24,6 +24,10 @@ def main():
     [p.start() for p in processes]
     [p.join() for p in processes]
 
+    for name in names:
+        statistics_abs[name] = statistics_abs[name]
+        statistics_phase[name] = statistics_phase[name]
+
     print_to_file("train-abs", statistics_abs, names)
     print_to_file("train-phases", statistics_phase, names)
     print("Analysis done")
@@ -31,14 +35,13 @@ def main():
 
 def analyse(target, statistics_abs, statistics_phase):
 
-    abs_mean = np.vectorize(lambda x: x.abs.mean())
-    phase_mean = np.vectorize(lambda x: x.phase.mean())
     cnter = 0
     # load test image
     # image = bob.io.base.load(bob.io.base.test_utils.datafile("testimage.hdf5", 'bob.ip.gabor'))
 
     sub_abs = list()
     sub_phase = list()
+
     target_name = target.split("/")[-2]
 
     for name in glob.glob(target + "*"):
@@ -52,9 +55,9 @@ def analyse(target, statistics_abs, statistics_phase):
         trafo_image = gwt(gray_scale)
 
         jets = extractor.extract(trafo_image)
+        sub_abs.append(np.array([x.abs for x in jets]))
+        sub_phase.append(np.array([x.phase for x in jets]))
 
-        sub_abs.append(abs_mean(jets))
-        sub_phase.append(phase_mean(jets))
         if cnter % 250 == 0:
             now = datetime.datetime.now()
             print(str(now.hour)+":"+str(now.minute)+":"+str(now.second)+"  -  " + target_name + "  -  "+str(cnter))
@@ -63,28 +66,46 @@ def analyse(target, statistics_abs, statistics_phase):
 
     print(str(now.hour) + ":" + str(now.minute) + ":" + str(now.second) + "  -  " + target_name + "  -  Gathering Statistics")
 
-    absolute = np.column_stack(sub_abs)
-    phases = np.column_stack(sub_phase)
-    statistics_abs[target_name] = [absolute.mean(axis=1), absolute.std(axis=1)]
-    statistics_phase[target_name] = [phases.mean(axis=1), phases.std(axis=1)]
+    abs_jets = [None for i in range(len(sub_abs[0]))]
+    phase_jets = [None for i in range(len(sub_phase[0]))]
+
+    for i in range(len(sub_abs)):
+        for j in range(len(sub_abs[i])):
+
+            if abs_jets[j] is None:
+                abs_jets[j] = sub_abs[i][j]
+                phase_jets[j] = sub_phase[i][j]
+            else:
+                abs_jets[j] = np.column_stack((abs_jets[j], sub_abs[i][j]))
+                phase_jets[j] = np.column_stack((phase_jets[j], sub_phase[i][j]))
+
+    statistics_abs[target_name] = np.array([np.column_stack((jet.mean(axis=1), jet.std(axis=1))) for jet in abs_jets])
+    statistics_phase[target_name] = np.array([np.column_stack((jet.mean(axis=1), jet.std(axis=1))) for jet in phase_jets])
+
     print(str(now.hour) + ":" + str(now.minute) + ":" + str(now.second) + "  -  " + target_name + "  -  Done!")
 
 
 def print_to_file(prefix, data, names):
+    header = "".join([name+"\tstddev\t" for name in names]) + "\n"
+
+    matrix = None
+
     with open("../../dump/" + prefix, "w") as f:
-        matrix = None
         for name in names:
-            data[name] = data[name]
-            f.write(name+"\t"+"stddev\t")
             if matrix is None:
-                matrix = data[name]
+                matrix = [[data[name][i][j].tolist() for j in range(len(data[name][i]))] for i in range(len(data[name]))]
             else:
-                matrix = np.row_stack((matrix, data[name]))
-        f.write("\n")
+                [[matrix[i][j].extend(data[name][i][j]) for j in range(len(data[name][i]))] for i in range(len(data[name]))]
+            #for i in range(len(data[name])):
+            #    for j in range(len(data[name][i])):
+            #        matrix[i][j].extend(data[name][i][j])
 
-        for row in np.transpose(matrix):
-            f.write("\t".join(row.astype(str))+"\n")
-
+        for i in range(len(matrix)):
+            f.write("Jet-" + str(i) + "\n")
+            f.write(header)
+            for vector in matrix[i]:
+                f.write("\t".join(str(v) for v in vector) + "\n")
+            f.write("\n\n")
 
 if __name__ == "__main__":
     main()
