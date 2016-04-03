@@ -15,10 +15,10 @@ BASE_PATH = "/home/nixon/PycharmProjects/SYSC5405Project"
 JETS = 88
 VECTORS = 72
 MAX_IMAGES_PER_CLASS = None
-CROSS_VALIDATION = 5
+CROSS_VALIDATION = None
 FEATURES_PER_JET = 40
-DEBUG = False
-FEATURE_SELECTION = True
+DEBUG = True
+FEATURE_SELECTION = False
 
 CLASSES = {
     "Up": 0,
@@ -32,6 +32,14 @@ CLASSES = {
 CLASS_ID_LOOKUP = ["" for key in CLASSES]
 for key in CLASSES:
     CLASS_ID_LOOKUP[CLASSES[key]] = key
+
+
+def train(features, classes):
+    #classifier = LinearDiscriminantAnalysis(solver="eigen", shrinkage="auto")
+    #classifier = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+    classifier = LinearDiscriminantAnalysis()
+    classifier.fit(features, classes)
+    return classifier
 
 
 def main():
@@ -196,14 +204,6 @@ def gabor_analyse(train_data, test_data):
     return winners
 
 
-def train(features, classes):
-    #classifier = LinearDiscriminantAnalysis(solver="eigen", shrinkage="auto")
-    classifier = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
-    #classifier = LinearDiscriminantAnalysis()
-    classifier.fit(features, classes)
-    return classifier
-
-
 def predict(classifiers, test_data, best_features=None):
     predictions_votes = list()
     winners = list()
@@ -211,6 +211,9 @@ def predict(classifiers, test_data, best_features=None):
     for image_name in test_data:
         jets = extract_features(image_name)
         votes = [0] * len(CLASSES)
+        if DEBUG:
+            print("Classifier Votes for image " + image_name)
+            print("Classifier\tVote\tProbability")
         for jet in range(len(jets)):
             if best_features is not None:
                 feature_vector = np.take(jets[jet], best_features[jet])
@@ -218,6 +221,8 @@ def predict(classifiers, test_data, best_features=None):
                 feature_vector = jets[jet]
             classe = int(classifiers[jet].predict(feature_vector)[0])
             prob = classifiers[jet].predict_proba(feature_vector)[0][classe]
+            if DEBUG:
+                print(str(jet) + "\t" + str(classe) + "\t" + str(prob))
             votes[classe] += 1 * prob
         predictions_votes.append(votes)
         m = max(votes)
