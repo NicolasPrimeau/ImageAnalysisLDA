@@ -7,6 +7,7 @@ import datetime
 import ctypes as c
 from multiprocessing import Process, Array
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.feature_selection import SelectKBest
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -15,7 +16,9 @@ JETS = 88
 VECTORS = 72
 MAX_IMAGES_PER_CLASS = None
 CROSS_VALIDATION = 5
+FEATURES_PER_JET = 40
 DEBUG = False
+FEATURE_SELECTION = True
 
 CLASSES = {
     "Up": 0,
@@ -39,7 +42,13 @@ def main():
             if MAX_IMAGES_PER_CLASS is not None and MAX_IMAGES_PER_CLASS < len(train_data[key]):
                 train_data[key] = train_data[key][:MAX_IMAGES_PER_CLASS]
         test_data = glob.glob(BASE_PATH + "/data/test/*")
-        gabor_analyse(train_data, test_data)
+        test_data_classes = [2, 4, 1, 0, 3, 5]
+        predictions = gabor_analyse(train_data, test_data)
+        matrix, tie = precision_assesment(predictions, test_data_classes)
+        print('-' * 60)
+        print("Test Data")
+        print_confusion_matrix(matrix, tie)
+        print('-' * 60)
     else:
         total_data = dict()
         for key in CLASSES:
@@ -48,60 +57,78 @@ def main():
                 total_data[key] = total_data[key][:MAX_IMAGES_PER_CLASS]
             total_data[key] = slice_list(total_data[key], CROSS_VALIDATION)
 
+        # noinspection PyTypeChecker
         for i in range(CROSS_VALIDATION):
             print('-' * 60)
             print("Cross Validation fold " + str(i))
-            print('-' * 60 + '\n')
+            print('-' * 60)
             train_data = dict()
             test_data_classes = list()
             test_data = list()
             for key in CLASSES:
                 train_data[key] = list()
-                for slice in range(len(total_data[key])):
-                    if slice != i:
-                        train_data[key].extend(total_data[key][slice])
+                for data_slice in range(len(total_data[key])):
+                    if data_slice != i:
+                        train_data[key].extend(total_data[key][data_slice])
                     else:
-                        test_data.extend(total_data[key][slice])
-                        test_data_classes.extend([CLASSES[key]]*len(total_data[key][slice]))
+                        test_data.extend(total_data[key][data_slice])
+                        test_data_classes.extend([CLASSES[key]]*len(total_data[key][data_slice]))
             predictions = gabor_analyse(train_data, test_data)
-            precise, wrong, tie = precision_assesment(predictions, test_data_classes)
+            matrix, tie = precision_assesment(predictions, test_data_classes)
             print('-' * 60)
             print("Cross validation run " + str(i))
-            print("Correct: " + str(precise))
-            print("Wrong: " + str(wrong))
-            print("Tie: " + str(tie))
-            print("Total: " + str(len(test_data)))
+            print_confusion_matrix(matrix, tie)
             print('-' * 60)
+
+
+def print_confusion_matrix(matrix, tie):
+    print()
+    print("Confusion Matrix")
+    print()
+    print("\t\t" + "\t".join(CLASS_ID_LOOKUP))
+    correct = 0
+    wrong = 0
+    for i in range(len(matrix)):
+        class_id = CLASS_ID_LOOKUP[i]
+        print((class_id if class_id != "Up" else class_id + "\t") +
+              "\t" + "\t".join([str(score) for score in matrix[i]]))
+        for j in range(len(matrix[i])):
+            if j == i:
+                correct += matrix[i][j]
+            else:
+                wrong += matrix[i][j]
+    print()
+    print("Correct: " + str(correct))
+    print("Wrong: " + str(wrong))
+    print("Tie: " + str(tie))
+    print("Total: " + str(correct+wrong+tie))
+    print()
 
 
 def precision_assesment(predictions, test_data_classes):
     tie = 0
-    precise = 0
-    wrong = 0
-    for j in range(len(test_data_classes)):
+    matrix = np.zeros((len(CLASSES), len(CLASSES)), dtype=int)
+    for j in range(len(predictions)):
         prediction = predictions[j]
         if len(prediction) > 1:
             tie += 1
         else:
-            prediction = prediction[0]
-            actual = test_data_classes[j]
-            if prediction == actual:
-                precise += 1
-            else:
-                wrong += 1
-    return precise, wrong, tie
+            prediction = int(prediction[0])
+            actual = int(test_data_classes[j])
+            matrix[actual][prediction] += 1
+    return matrix, tie
 
 
 def slice_list(seq, num):
-  avg = len(seq) / float(num)
-  out = []
-  last = 0.0
+    avg = len(seq) / float(num)
+    out = []
+    last = 0.0
 
-  while last < len(seq):
-    out.append(seq[int(last):int(last + avg)])
-    last += avg
+    while last < len(seq):
+        out.append(seq[int(last):int(last + avg)])
+        last += avg
 
-  return out
+    return out
 
 
 def gabor_analyse(train_data, test_data):
@@ -111,36 +138,51 @@ def gabor_analyse(train_data, test_data):
     print("Allocating Memory")
     for key in CLASSES:
         number_of_pictures = len(train_data[key])
-        features_per_class[key] = np.frombuffer(Array(c.c_double, JETS*number_of_pictures*(2*VECTORS+1)).get_obj())
-        features_per_class[key] = features_per_class[key].reshape((JETS, number_of_pictures, (2*VECTORS+1)))
+        features_per_class[key] = np.frombuffer(Array(c.c_double, JETS*number_of_pictures*(2*VECTORS)).get_obj())
+        features_per_class[key] = features_per_class[key].reshape((JETS, number_of_pictures, (2*VECTORS)))
 
     print("Processing images")
     processes = [Process(target=analyse, args=(CLASSES[key], train_data[key], features_per_class)) for key in CLASSES]
     [p.start() for p in processes]
     [p.join() for p in processes]
 
-    print("Preparing Data")
+    print("Feature Selection")
     # NAME x JETS x SAMPLES x feature vector
     # 88 x (NAMExSAMPLES) x feature vector
 
-    features = [np.row_stack(([features_per_class[key][jet] for key in CLASSES]))
-                for jet in range(len(features_per_class[next(iter(CLASSES.keys()))]))]
+    classes = list()
+    features = list()
+    best = list() if FEATURE_SELECTION else None
+    for jet in range(len(features_per_class[next(iter(CLASSES.keys()))])):
+        samples = np.row_stack([features_per_class[key][jet] for key in CLASSES])
+        cl = list()
+        for key in CLASSES:
+            cl.extend([CLASSES[key]] * len(features_per_class[key][jet]))
+        classes.append(cl)
+        if FEATURE_SELECTION:
+            x = SelectKBest(k=FEATURES_PER_JET)
+            x.fit(samples, cl)
+            selected = x.get_support(indices=True)
+            features.append([np.take(sample, selected) for sample in samples])
+            best.append(selected)
+        else:
+            features.append(samples)
 
     del features_per_class
 
     print("Training Classifiers")
     classifiers = list()
     for feature_set in range(len(features)):
-        classifiers.append(train(features[feature_set]))
+        classifiers.append(train(features[feature_set], classes[feature_set]))
         now = datetime.datetime.now()
         if DEBUG:
             print(str(now.hour) + ":" + str(now.minute) + ":" + str(now.second) +
-                "  -  Done training classifier " + str(feature_set+1) + "/" + str(len(features)))
+                  "  -  Done training classifier " + str(feature_set+1) + "/" + str(len(features)))
     del features
 
     print("Testing Classifiers")
 
-    winners, votes = predict(classifiers, test_data)
+    winners, votes = predict(classifiers, test_data, best_features=best)
     if DEBUG:
         for image_id in range(len(test_data)):
             labeled = [(CLASS_ID_LOOKUP[classe] + '(' + str(votes[image_id][classe]) + ')')
@@ -154,42 +196,29 @@ def gabor_analyse(train_data, test_data):
     return winners
 
 
-def train(features):
-    samples = list()
-    classes = list()
-    np.random.shuffle(features)
-    for feature in features:
-        feature = feature.tolist()
-        classe = feature.pop()
-        samples.append(feature)
-        classes.append(classe)
-
-    classifier = LinearDiscriminantAnalysis(solver="eigen", shrinkage="auto")
-    classifier.fit(samples, classes)
+def train(features, classes):
+    #classifier = LinearDiscriminantAnalysis(solver="eigen", shrinkage="auto")
+    classifier = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+    #classifier = LinearDiscriminantAnalysis()
+    classifier.fit(features, classes)
     return classifier
 
 
-def predict(classifiers, test_data):
+def predict(classifiers, test_data, best_features=None):
     predictions_votes = list()
     winners = list()
-
     cnter = 0
     for image_name in test_data:
-        image = misc.imread(image_name, mode="L")
-        gray_scale = misc.imresize(image, (63, 83))
-
-        extractor = bob.ip.gabor.Graph((0, 0), (gray_scale.shape[0] - 1, gray_scale.shape[1] - 1), (8, 8))
-
-        # perform Gabor wavelet transform on image
-        gwt = bob.ip.gabor.Transform(number_of_scales=9)
-        trafo_image = gwt(gray_scale)
-
-        # noinspection PyArgumentList
-        jets = extractor.extract(trafo_image)
+        jets = extract_features(image_name)
         votes = [0] * len(CLASSES)
         for jet in range(len(jets)):
-            classe = classifiers[jet].predict([np.concatenate((jets[jet].complex.real, jets[jet].complex.imag))])[0]
-            votes[int(classe)] += 1
+            if best_features is not None:
+                feature_vector = np.take(jets[jet], best_features[jet])
+            else:
+                feature_vector = jets[jet]
+            classe = int(classifiers[jet].predict(feature_vector)[0])
+            prob = classifiers[jet].predict_proba(feature_vector)[0][classe]
+            votes[classe] += 1 * prob
         predictions_votes.append(votes)
         m = max(votes)
         winners.append([i for i, j in enumerate(votes) if j == m])
@@ -206,24 +235,13 @@ def predict(classifiers, test_data):
 def analyse(classe_number, targets, features):
     cnter = 0
     classe = CLASS_ID_LOOKUP[classe_number]
-    classe_number = [classe_number]
 
     for name in targets:
-        image = misc.imread(name, mode="L")
-        gray_scale = misc.imresize(image, (63, 83))
 
-        extractor = bob.ip.gabor.Graph((0, 0), (gray_scale.shape[0]-1, gray_scale.shape[1]-1), (8, 8))
-
-        # perform Gabor wavelet transform on image
-        gwt = bob.ip.gabor.Transform(number_of_scales=9)
-        trafo_image = gwt(gray_scale)
-
-        # noinspection PyArgumentList
-        jets = extractor.extract(trafo_image)
+        jets = extract_features(name)
 
         for jet in range(len(jets)):
-            np.copyto(features[classe][jet][cnter],
-                      np.concatenate((jets[jet].complex.real, jets[jet].complex.imag, classe_number)))
+            np.copyto(features[classe][jet][cnter], jets[jet])
 
         if cnter % 250 == 0 and DEBUG:
             now = datetime.datetime.now()
@@ -233,6 +251,21 @@ def analyse(classe_number, targets, features):
     now = datetime.datetime.now()
     print(str(now.hour) + ":" + str(now.minute) + ":" + str(now.second) + " - Analyzing " +
           classe + " - Done! " + str(cnter) + " images processed")
+
+
+def extract_features(image_name):
+    image = misc.imread(image_name, mode="L")
+    gray_scale = misc.imresize(image, (63, 83))
+
+    extractor = bob.ip.gabor.Graph((0, 0), (gray_scale.shape[0] - 1, gray_scale.shape[1] - 1), (8, 8))
+
+    # perform Gabor wavelet transform on image
+    gwt = bob.ip.gabor.Transform(number_of_scales=9)
+    trafo_image = gwt(gray_scale)
+
+    # noinspection PyArgumentList
+    jets = extractor.extract(trafo_image)
+    return [np.concatenate((jets[jet].complex.real, jets[jet].complex.imag)) for jet in range(len(jets))]
 
 
 if __name__ == "__main__":
