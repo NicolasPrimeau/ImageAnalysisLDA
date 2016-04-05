@@ -3,11 +3,13 @@ import bob.io.base.test_utils
 from scipy import misc
 import numpy as np
 import glob
+import sys
 import datetime
 import ctypes as c
 from multiprocessing import Process, Array
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.feature_selection import SelectKBest
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.pipeline import Pipeline
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -15,10 +17,8 @@ BASE_PATH = "/home/nixon/PycharmProjects/SYSC5405Project"
 JETS = 88
 VECTORS = 72
 MAX_IMAGES_PER_CLASS = None
-CROSS_VALIDATION = None
-FEATURES_PER_JET = 40
+CROSS_VALIDATION = 10
 DEBUG = True
-FEATURE_SELECTION = False
 
 CLASSES = {
     "Up": 0,
@@ -35,9 +35,9 @@ for key in CLASSES:
 
 
 def train(features, classes):
-    #classifier = LinearDiscriminantAnalysis(solver="eigen", shrinkage="auto")
-    #classifier = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
-    classifier = LinearDiscriminantAnalysis()
+    classifier = Pipeline([
+        ('classification', QuadraticDiscriminantAnalysis())
+    ])
     classifier.fit(features, classes)
     return classifier
 
@@ -160,21 +160,15 @@ def gabor_analyse(train_data, test_data):
 
     classes = list()
     features = list()
-    best = list() if FEATURE_SELECTION else None
+
     for jet in range(len(features_per_class[next(iter(CLASSES.keys()))])):
         samples = np.row_stack([features_per_class[key][jet] for key in CLASSES])
+
         cl = list()
         for key in CLASSES:
             cl.extend([CLASSES[key]] * len(features_per_class[key][jet]))
         classes.append(cl)
-        if FEATURE_SELECTION:
-            x = SelectKBest(k=FEATURES_PER_JET)
-            x.fit(samples, cl)
-            selected = x.get_support(indices=True)
-            features.append([np.take(sample, selected) for sample in samples])
-            best.append(selected)
-        else:
-            features.append(samples)
+        features.append(samples)
 
     del features_per_class
 
@@ -186,11 +180,14 @@ def gabor_analyse(train_data, test_data):
         if DEBUG:
             print(str(now.hour) + ":" + str(now.minute) + ":" + str(now.second) +
                   "  -  Done training classifier " + str(feature_set+1) + "/" + str(len(features)))
+        else:
+            sys.stdout.write("|")
+    print()
     del features
 
     print("Testing Classifiers")
 
-    winners, votes = predict(classifiers, test_data, best_features=best)
+    winners, votes = predict(classifiers, test_data)
     if DEBUG:
         for image_id in range(len(test_data)):
             labeled = [(CLASS_ID_LOOKUP[classe] + '(' + str(votes[image_id][classe]) + ')')
@@ -204,25 +201,22 @@ def gabor_analyse(train_data, test_data):
     return winners
 
 
-def predict(classifiers, test_data, best_features=None):
+def predict(classifiers, test_data):
     predictions_votes = list()
     winners = list()
     cnter = 0
     for image_name in test_data:
         jets = extract_features(image_name)
         votes = [0] * len(CLASSES)
-        if DEBUG:
-            print("Classifier Votes for image " + image_name)
-            print("Classifier\tVote\tProbability")
+        #if DEBUG:
+        #    print("Classifier Votes for image " + image_name)
+        #    print("Classifier\tVote\tProbability")
         for jet in range(len(jets)):
-            if best_features is not None:
-                feature_vector = np.take(jets[jet], best_features[jet])
-            else:
-                feature_vector = jets[jet]
+            feature_vector = jets[jet]
             classe = int(classifiers[jet].predict(feature_vector)[0])
             prob = classifiers[jet].predict_proba(feature_vector)[0][classe]
-            if DEBUG:
-                print(str(jet) + "\t" + str(classe) + "\t" + str(prob))
+            #if DEBUG:
+            #    print(str(jet) + "\t" + str(classe) + "\t" + str(prob))
             votes[classe] += 1 * prob
         predictions_votes.append(votes)
         m = max(votes)
