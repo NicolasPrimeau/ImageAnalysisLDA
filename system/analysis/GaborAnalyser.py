@@ -4,21 +4,23 @@ from scipy import misc
 import numpy as np
 import glob
 import sys
+import random
 import datetime
 import ctypes as c
 from multiprocessing import Process, Array
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.pipeline import Pipeline
 import warnings
 warnings.filterwarnings('ignore')
 
 BASE_PATH = "/home/nixon/PycharmProjects/SYSC5405Project"
+PREDICTION_FILE_NAME = "predictions"
 JETS = 88
 VECTORS = 72
 MAX_IMAGES_PER_CLASS = None
-CROSS_VALIDATION = 10
+CROSS_VALIDATION = None
 DEBUG = True
+PRODUCTION = True
 
 CLASSES = {
     "Up": 0,
@@ -33,6 +35,8 @@ CLASS_ID_LOOKUP = ["" for key in CLASSES]
 for key in CLASSES:
     CLASS_ID_LOOKUP[CLASSES[key]] = key
 
+CLASS_ID_LOOKUP_PRODUCTION = [key[0] for key in CLASS_ID_LOOKUP]
+
 
 def train(features, classes):
     classifier = Pipeline([
@@ -44,9 +48,9 @@ def train(features, classes):
 
 def main():
     train_data = dict()
-    if CROSS_VALIDATION is None:
+    if CROSS_VALIDATION is None and not PRODUCTION:
         for key in CLASSES:
-            train_data[key] = glob.glob(BASE_PATH + "/data/train/"+key+"/*")
+            train_data[key] = glob.glob(BASE_PATH + "/data/train/" + key + "/*")
             if MAX_IMAGES_PER_CLASS is not None and MAX_IMAGES_PER_CLASS < len(train_data[key]):
                 train_data[key] = train_data[key][:MAX_IMAGES_PER_CLASS]
         test_data = glob.glob(BASE_PATH + "/data/test/*")
@@ -57,7 +61,7 @@ def main():
         print("Test Data")
         print_confusion_matrix(matrix, tie)
         print('-' * 60)
-    else:
+    elif not PRODUCTION:
         total_data = dict()
         for key in CLASSES:
             total_data[key] = glob.glob(BASE_PATH + "/data/train/"+key+"/*")
@@ -87,6 +91,29 @@ def main():
             print("Cross validation run " + str(i))
             print_confusion_matrix(matrix, tie)
             print('-' * 60)
+    elif PRODUCTION:
+        for key in CLASSES:
+            train_data[key] = glob.glob(BASE_PATH + "/data/train/" + key + "/*")
+            if MAX_IMAGES_PER_CLASS is not None and MAX_IMAGES_PER_CLASS < len(train_data[key]):
+                train_data[key] = train_data[key][:MAX_IMAGES_PER_CLASS]
+
+        test_data = [BASE_PATH + "/data/production/" + str(i) + ".png"
+                     for i in range(len(glob.glob(BASE_PATH + "/data/production/*")))]
+        predictions = gabor_analyse(train_data, test_data)
+        write_predictions(predictions)
+
+
+def write_predictions(predictions):
+    print("Writing Predictions for " + str(len(predictions)) + " images")
+    with open(BASE_PATH + "/dump/" + PREDICTION_FILE_NAME, "w") as pred_file:
+        for i in range(len(predictions)):
+            if len(predictions[i]) > 1:
+                prediction = [random.choice(predictions[i])]
+                print("Detected tie for image " + str(i) + "! Going with random pick " + str(prediction) +
+                      " out for " + str(predictions[i]))
+            else:
+                prediction = predictions[i][0]
+            pred_file.write(str(i)+": " + CLASS_ID_LOOKUP_PRODUCTION[prediction] + "\n")
 
 
 def print_confusion_matrix(matrix, tie):
@@ -208,15 +235,10 @@ def predict(classifiers, test_data):
     for image_name in test_data:
         jets = extract_features(image_name)
         votes = [0] * len(CLASSES)
-        #if DEBUG:
-        #    print("Classifier Votes for image " + image_name)
-        #    print("Classifier\tVote\tProbability")
         for jet in range(len(jets)):
             feature_vector = jets[jet]
             classe = int(classifiers[jet].predict(feature_vector)[0])
             prob = classifiers[jet].predict_proba(feature_vector)[0][classe]
-            #if DEBUG:
-            #    print(str(jet) + "\t" + str(classe) + "\t" + str(prob))
             votes[classe] += 1 * prob
         predictions_votes.append(votes)
         m = max(votes)
